@@ -1,0 +1,44 @@
+warning: unused variable: `ctx`
+   --> src/main.rs:376:24
+    |
+376 |     fn exec(&mut self, ctx: &mut Context) -> anyhow::Result<()> {
+    |                        ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `ctx`
+   --> src/main.rs:392:24
+    |
+392 |     fn exec(&mut self, ctx: &mut Context) -> anyhow::Result<()> {
+    |                        ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+
+warning: fields `condition` and `commands` are never read
+   --> src/main.rs:371:5
+    |
+370 | struct If {
+    |        -- fields in this struct
+371 |     condition: String,
+    |     ^^^^^^^^^
+372 |     commands: Vec<Box<dyn Execute>>,
+    |     ^^^^^^^^
+    |
+    = note: `If` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` on by default
+
+warning: fields `variable` and `iterator` are never read
+   --> src/main.rs:387:5
+    |
+386 | struct For {
+    |        --- fields in this struct
+387 |     variable: String,
+    |     ^^^^^^^^
+388 |     iterator: Vec<Box<dyn Execute>>,
+    |     ^^^^^^^^
+    |
+    = note: `For` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `cs252shell` (bin "cs252shell") generated 4 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running `target/debug/cs252shell`
+cd: can't cd to notfound
+

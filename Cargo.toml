@@ -1,0 +1,16 @@
+[package]
+name = "cs252shell"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.80"
+expanduser = "1.2.2"
+filedescriptor = "0.8.2"
+is-terminal = "0.4.12"
+libc = "0.2.153"
+pest = "2.7.7"
+pest_derive = "2.7.7"
+regex = "1.10.4"
+signal-hook = { version = "0.3.17", features = ["extended-siginfo"] }
+termion = "3.0.0"

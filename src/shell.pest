@@ -1,0 +1,78 @@
+WHITESPACE = _{ "\t" | " " }
+COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
+NEWLINE = _{ "\r\n" | "\n" }
+
+history_silence = { " " }
+
+subshell = { ("$(" ~ subshell_program ~ ")") | ("`" ~ subshell_program ~ "`") }
+
+// STRING RULES
+string = { !"\\" ~ "\"" ~ inner ~ "\"" }
+
+compound_string = ${ (environment_variable | unquoted_string)+ }
+environment_variable = { ("${" ~ env_var_inner ~ "}") | ("$" ~ env_var_inner) }
+env_var_inner = @{ char ~ (!string_terminators ~ char)*}
+unquoted_string = @{ !string_terminators ~ (char | ("\\"~ (string_terminators | "&"))) ~ (!string_terminators ~ char)* }
+string_terminators = { (" " | ")" | "}" | NEWLINE | ";" | "$" | "\"" | ">" | "<" | "|" | "`") }
+
+inner = @{ char* }
+
+char = {
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+// END STRING RULES
+
+item = { string | compound_string }
+
+item_or_subshell = { !("|" | redirection_op | ")" | (!"\\" ~ "&") | "fi;" | "done;" | ";") ~ (subshell | item) }
+
+command_arg = { item_or_subshell ~ item_or_subshell* }
+
+truncate = { ">" }
+
+append = { ">>" }
+
+read = { "<" }
+
+truncate_error = { "2>" }
+
+truncate_all = { ">&" }
+
+append_all = { ">>&" }
+
+redirection_op = { append_all | append | truncate_all | truncate | truncate_error | read }
+
+stdin = { "0" }
+
+stdout = { "1" }
+
+stderr = { "2" }
+
+file_descriptor = ${ (stdin | stdout | stderr) }
+
+redirection = { redirection_op ~ (file_descriptor | item_or_subshell) }
+
+daemon = { "&" }
+
+subshell_program = { command_arg ~ ("|" ~ command_arg)* }
+
+program = { !(("fi" | "done") ~ !ANY) ~ command_arg ~ ("|" ~ command_arg)* ~ redirection* ~ daemon? }
+
+condition = @{ char ~ (!"]" ~ char)* }
+
+if_statement = { "if" ~ "[" ~ condition ~ "];" ~ "then" ~ program_list* ~ "fi"  }
+
+while_statement = { "while" ~ "[" ~ condition ~ "];" ~ "do" ~ program_list* ~ "done" }
+
+for_iter = { item_or_subshell+ }
+
+for_statement = { "for" ~ unquoted_string ~ "in" ~ for_iter ~ ";" ~ "do" ~ program_list* ~ "done" }
+
+control_flow = { if_statement | while_statement | for_statement }
+
+single_comment = _{ "#" ~ ANY* }
+
+program_list = { history_silence? ~ NEWLINE* ~ ((single_comment | control_flow | program) ~ ((";" | NEWLINE) ~ (control_flow | program)?)*) }
+
