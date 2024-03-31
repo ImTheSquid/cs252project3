@@ -22,7 +22,7 @@ use anyhow::bail;
 use regex::Regex as RustRegex;
 use signal_hook::iterator::exfiltrator::origin::WithOrigin;
 use signal_hook::iterator::SignalsInfo;
-use termion::async_stdin;
+use libc::c_int;
 
 #[derive(Debug, Parser)]
 #[grammar = "shell.pest"]
@@ -212,7 +212,7 @@ struct SingleCommand {
 #[derive(Debug)]
 enum InfoSource {
     Default,
-    File(filedescriptor::FileDescriptor),
+    File(filedescriptor::FileDescriptor, Option<c_int>),
     Execute(Box<CommandSet>),
 }
 
@@ -220,8 +220,20 @@ impl Clone for InfoSource {
     fn clone(&self) -> Self {
         match self {
             Self::Default => Self::Default,
-            Self::File(fd) => Self::File(FileDescriptor::dup(fd).expect("fd dup to succeed")),
+            Self::File(fd, _raw) => Self::File(FileDescriptor::dup(fd).expect("fd dup to succeed"), None),
             Self::Execute(cs) => Self::Execute(cs.clone()),
+        }
+    }
+}
+
+impl Drop for InfoSource {
+    fn drop(&mut self) {
+        match self {
+            Self::File(_, raw) => if let Some(raw) = raw {
+                println!("CLOSE FD {}", *raw);
+                unsafe { libc::close(*raw); }
+            },
+            _ => {}
         }
     }
 }
@@ -254,7 +266,7 @@ fn output_data(
                 println!("{data}")
             }
         }
-        InfoSource::File(fd) => fd.write_all(data.as_bytes())?,
+        InfoSource::File(fd, _) => fd.write_all(data.as_bytes())?,
         InfoSource::Execute(_) => todo!(),
     }
 
@@ -403,7 +415,7 @@ impl CommandSet {
             let input = if i == 0 {
                 match self.input {
                     InfoSource::Default => Stdio::inherit(),
-                    InfoSource::File(ref fd) => fd.as_stdio().expect("stdio conversion to succeed"),
+                    InfoSource::File(ref fd, _) => fd.as_stdio().expect("stdio conversion to succeed"),
                     InfoSource::Execute(ref _cs) => {
                         todo!()
                     }
@@ -418,7 +430,7 @@ impl CommandSet {
                 } else {
                     match self.output {
                         InfoSource::Default => Stdio::inherit(),
-                        InfoSource::File(ref fd) => {
+                        InfoSource::File(ref fd, _) => {
                             fd.as_stdio().expect("stdio conversion to succeed")
                         }
                         InfoSource::Execute(ref _cs) => {
@@ -433,7 +445,7 @@ impl CommandSet {
             let error = if i == num_commands - 1 {
                 match &self.error {
                     InfoSource::Default => Stdio::inherit(),
-                    InfoSource::File(ref fd) => fd.as_stdio().expect("stdio conversion to succeed"),
+                    InfoSource::File(ref fd, _) => fd.as_stdio().expect("stdio conversion to succeed"),
                     InfoSource::Execute(ref _cs) => {
                         todo!()
                     }
@@ -705,7 +717,7 @@ fn handle_command_arg(pair: Pair<'_, Rule>) -> SingleCommand {
 #[derive(Debug)]
 enum RedirectionToken {
     CommandToken(CommandToken),
-    FileDescriptor(FileDescriptor),
+    FileDescriptor(FileDescriptor, Option<c_int>),
 }
 
 fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
@@ -760,7 +772,9 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
 
                 // SAFETY: These file descriptors must always exist
                 unsafe {
-                    RedirectionToken::FileDescriptor(FileDescriptor::from_raw_fd(libc::dup(fd)))
+                    let fd = libc::dup(fd);
+                    println!("OPEN FD {fd}");
+                    RedirectionToken::FileDescriptor(FileDescriptor::from_raw_fd(fd), Some(fd))
                 }
             }
             _ => unreachable!(),
@@ -774,7 +788,7 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
                 }
 
                 output = match target {
-                    RedirectionToken::FileDescriptor(fd) => InfoSource::File(fd),
+                    RedirectionToken::FileDescriptor(fd, raw) => InfoSource::File(fd, raw),
                     RedirectionToken::CommandToken(ct) => match ct {
                         CommandToken::Literal(lit) => {
                             let file = OpenOptions::new()
@@ -784,7 +798,7 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
                                 .open(process_string(&lit).expect("string to process"))
                                 .expect("file open to work");
 
-                            InfoSource::File(FileDescriptor::new(file))
+                            InfoSource::File(FileDescriptor::new(file), None)
                         }
                         CommandToken::Subshell(cs) => InfoSource::Execute(Box::new(cs)),
                     },
@@ -792,9 +806,9 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
             }
             Rule::truncate_all | Rule::append_all => {
                 (output, error) = match target {
-                    RedirectionToken::FileDescriptor(fd) => {
+                    RedirectionToken::FileDescriptor(fd, raw) => {
                         let second = FileDescriptor::dup(&fd).expect("duplication to succeed");
-                        (InfoSource::File(fd), InfoSource::File(second))
+                        (InfoSource::File(fd, raw), InfoSource::File(second, raw))
                     }
                     RedirectionToken::CommandToken(ct) => match ct {
                         CommandToken::Literal(lit) => {
@@ -808,8 +822,8 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
                             let desc = FileDescriptor::new(file);
 
                             (
-                                InfoSource::File(FileDescriptor::dup(&desc).expect("fd to dup")),
-                                InfoSource::File(desc),
+                                InfoSource::File(FileDescriptor::dup(&desc).expect("fd to dup"), None),
+                                InfoSource::File(desc, None),
                             )
                         }
                         CommandToken::Subshell(cs) => (
@@ -821,7 +835,7 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
             }
             Rule::truncate_error => {
                 error = match target {
-                    RedirectionToken::FileDescriptor(fd) => InfoSource::File(fd),
+                    RedirectionToken::FileDescriptor(fd, raw) => InfoSource::File(fd, raw),
                     RedirectionToken::CommandToken(ct) => match ct {
                         CommandToken::Literal(lit) => {
                             let file = OpenOptions::new()
@@ -833,7 +847,7 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
                                     panic!("file open to work on path {lit:?} with error: {e}")
                                 });
 
-                            InfoSource::File(FileDescriptor::new(file))
+                            InfoSource::File(FileDescriptor::new(file), None)
                         }
                         CommandToken::Subshell(cs) => InfoSource::Execute(Box::new(cs)),
                     },
@@ -841,7 +855,7 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
             }
             Rule::read => {
                 input = match target {
-                    RedirectionToken::FileDescriptor(fd) => InfoSource::File(fd),
+                    RedirectionToken::FileDescriptor(fd, raw) => InfoSource::File(fd, raw),
                     RedirectionToken::CommandToken(ct) => match ct {
                         CommandToken::Literal(lit) => {
                             let file = OpenOptions::new()
@@ -851,7 +865,7 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
                                     panic!("file open to work on path {lit:?} with error: {e}")
                                 });
 
-                            InfoSource::File(FileDescriptor::new(file))
+                            InfoSource::File(FileDescriptor::new(file), None)
                         }
                         CommandToken::Subshell(cs) => InfoSource::Execute(Box::new(cs)),
                     },
@@ -987,6 +1001,9 @@ fn parse(cmd: &str, history: &mut Option<&mut Vec<String>>) -> Vec<Box<dyn Execu
 }
 
 fn run_script(contents: &str, ctx: &mut Context, history: &mut Option<&mut Vec<String>>) {
+    if contents.trim_end().is_empty() {
+        return;
+    }
     let parsed = parse(contents, history);
     for mut parsed_command in parsed {
         if parsed_command.is_daemon() {
@@ -1080,8 +1097,9 @@ fn main() {
         Sigchld(u32),
     }
     let (termination_tx, termination_buffer) = mpsc::channel::<TerminationType>();
-    std::thread::spawn(move || {
-        let mut sigs = SignalsInfo::<WithOrigin>::new([SIGINT, SIGCHLD]).expect("signals to hook");
+    let mut sigs = SignalsInfo::<WithOrigin>::new([SIGINT, SIGCHLD]).expect("signals to hook");
+    let sig_hnd = sigs.handle();
+    let hnd = std::thread::spawn(move || {
         let mut kill_list = HashSet::new();
 
         for signal in &mut sigs {
@@ -1181,16 +1199,25 @@ fn main() {
         .lock()
         .into_raw_mode()
         .expect("raw mode conversion");
-    let mut stdin = async_stdin().bytes();
+    let mut stdin = OpenOptions::new().read(true).open("/dev/tty").expect("open dev tty").bytes();
     let mut input_buffer = String::new();
     let mut ignore_buffer = 0_usize;
     let mut current_history_position = -1_isize;
     let mut input_left_offset = 1;
+    // Deals with stdin
+    let mut first_write_done = false;
+    let mut needs_cr = false;
 
     loop {
         write!(stdout, "{}\r", termion::clear::CurrentLine).expect("write ok");
 
         let prompt = std::env::var("PROMPT").unwrap_or("myshell>".to_string());
+        if !first_write_done {
+            first_write_done = true;
+            write!(stdout, "{prompt} ").expect("write ok");
+            stdout.flush().expect("good flush");
+            needs_cr = true;
+        }
 
         if let Some(Ok(new)) = stdin.next() {
             if ignore_buffer > 0 {
@@ -1214,8 +1241,7 @@ fn main() {
                 if new == 65 || new == 66 {
                     input_left_offset = 1;
                     if current_history_position > -1 && !history.is_empty() {
-                        input_buffer =
-                            history[history.len() - 1 - current_history_position as usize].clone();
+                        input_buffer.clone_from(&history[history.len() - 1 - current_history_position as usize]);
                     } else if current_history_position == -1 {
                         input_buffer.clear();
                     }
@@ -1341,6 +1367,10 @@ fn main() {
             }
         }
 
+        if needs_cr {
+            write!(stdout, "\r").expect("good write");
+        }
+
         write!(
             stdout,
             "{prompt} {input_buffer} {}",
@@ -1348,9 +1378,15 @@ fn main() {
         )
         .expect("write ok");
         stdout.flush().expect("stdout flush");
-        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
     stdout.suspend_raw_mode().expect("exit raw mode");
+    unsafe {
+        libc::close(3);
+        libc::close(4);
+        libc::close(5);
+    }
+    sig_hnd.close();
+    hnd.join().expect("thread join");
     println!("buh bye");
 }
