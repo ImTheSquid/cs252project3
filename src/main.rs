@@ -14,7 +14,7 @@ use std::fs::{File, OpenOptions};
 use std::os::fd::FromRawFd;
 use std::process::Stdio;
 use std::sync::mpsc;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, atomic::AtomicBool};
 use termion::raw::IntoRawMode;
 // A friend of the Signals iterator, but can be customized by what we want yielded about each
 // signal.
@@ -1190,31 +1190,44 @@ fn main() {
         return;
     }
 
+    let (tx, rx) = mpsc::channel();
+    let run = Arc::new(AtomicBool::new(true));
+    let run_thread = run.clone();
+    let stdin_hnd = std::thread::spawn(move || {
+        let stdin = OpenOptions::new().read(true).open("/dev/tty").expect("open dev tty");
+        let mut hnd = nonblock::NonBlockingReader::from_fd(stdin).expect("nonblock");
+        if hnd.is_eof() {
+            return;
+        }
+        let mut buf = Vec::new();
+        while run_thread.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = hnd.read_available(&mut buf);
+            for item in &buf {
+                if tx.send(*item).is_err() {
+                    return;
+                }
+            }
+            buf.clear();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    });
+
     let mut stdout = stdout()
         .lock()
         .into_raw_mode()
         .expect("raw mode conversion");
-    let mut stdin = OpenOptions::new().read(true).open("/dev/tty").expect("open dev tty").bytes();
+    
     let mut input_buffer = String::new();
     let mut ignore_buffer = 0_usize;
     let mut current_history_position = -1_isize;
     let mut input_left_offset = 1;
-    // Deals with stdin
-    let mut first_write_done = false;
-    let mut needs_cr = false;
 
     loop {
         write!(stdout, "{}\r", termion::clear::CurrentLine).expect("write ok");
 
         let prompt = std::env::var("PROMPT").unwrap_or("myshell>".to_string());
-        if !first_write_done {
-            first_write_done = true;
-            write!(stdout, "{prompt} ").expect("write ok");
-            stdout.flush().expect("good flush");
-            needs_cr = true;
-        }
 
-        if let Some(Ok(new)) = stdin.next() {
+        if let Ok(new) = rx.try_recv() {
             if ignore_buffer > 0 {
                 match new {
                     65 => {
@@ -1345,7 +1358,7 @@ fn main() {
                     }
                 }
             }
-        }
+        } 
 
         for term in termination_buffer.try_iter() {
             match term {
@@ -1362,10 +1375,6 @@ fn main() {
             }
         }
 
-        if needs_cr {
-            write!(stdout, "\r").expect("good write");
-        }
-
         write!(
             stdout,
             "{prompt} {input_buffer} {}",
@@ -1373,6 +1382,7 @@ fn main() {
         )
         .expect("write ok");
         stdout.flush().expect("stdout flush");
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     stdout.suspend_raw_mode().expect("exit raw mode");
@@ -1383,5 +1393,7 @@ fn main() {
     }
     sig_hnd.close();
     hnd.join().expect("thread join");
+    run.store(false, std::sync::atomic::Ordering::SeqCst);
+    stdin_hnd.join().expect("stdin thread join");
     println!("buh bye");
 }
