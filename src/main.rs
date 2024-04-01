@@ -228,12 +228,8 @@ impl Clone for InfoSource {
 
 impl Drop for InfoSource {
     fn drop(&mut self) {
-        match self {
-            Self::File(_, raw) => if let Some(raw) = raw {
-                println!("CLOSE FD {}", *raw);
-                unsafe { libc::close(*raw); }
-            },
-            _ => {}
+        if let Self::File(_, Some(raw)) = self {
+            unsafe { libc::close(*raw); }
         }
     }
 }
@@ -773,7 +769,6 @@ fn handle_program(pair: Pair<'_, Rule>) -> CommandSet {
                 // SAFETY: These file descriptors must always exist
                 unsafe {
                     let fd = libc::dup(fd);
-                    println!("OPEN FD {fd}");
                     RedirectionToken::FileDescriptor(FileDescriptor::from_raw_fd(fd), Some(fd))
                 }
             }
