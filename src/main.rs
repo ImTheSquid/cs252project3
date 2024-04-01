@@ -1203,9 +1203,7 @@ fn main() {
         while run_thread.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = hnd.read_available(&mut buf);
             for item in &buf {
-                if tx.send(*item).is_err() {
-                    return;
-                }
+                tx.send(*item).expect("tx send");
             }
             buf.clear();
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1315,6 +1313,9 @@ fn main() {
                 9 => {
                     // Tab
                     // Get current attached word
+                    if input_buffer.is_empty() {
+                        continue;
+                    }
                     let splits = input_buffer[..=input_buffer.len() - input_left_offset as usize]
                         .split(' ')
                         .collect::<Vec<_>>();
