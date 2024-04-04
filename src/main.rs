@@ -117,6 +117,7 @@ fn expand_wildcards(path: &Path, previous_path_inclusions: usize) -> anyhow::Res
             .chain(found_directories)
             .map(|s| Path::new(&s).to_path_buf())
             .map(|pa| {
+                // First absolute check, makes sure on single wildcard absolute paths removed
                 if is_absolute {
                     current_path.join(pa)
                 } else {
@@ -138,9 +139,16 @@ fn expand_wildcards(path: &Path, previous_path_inclusions: usize) -> anyhow::Res
         .map(|dir_path| expand_wildcards(&dir_path, previous_path_inclusions + 1))
         .try_collect::<Vec<_>>()?;
 
+    let mut found = found.into_iter().flatten().collect::<Vec<_>>();
+    // Top level, second absolute check
+    if previous_path_inclusions == 0 && !is_absolute {
+        let removed_path_components = std::env::current_dir()?.components().count();
+        found = found.into_iter().map(|p| p.components().skip(removed_path_components).collect::<PathBuf>()).collect::<Vec<_>>();
+    }
+
     // Check if any items in current directory match
     // If is a directory, recurse into it, otherwise don't
-    Ok(found.into_iter().flatten().collect())
+    Ok(found)
 }
 
 // fn substitute_literal(lit: &str) -> String {
